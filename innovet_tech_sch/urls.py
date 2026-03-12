@@ -23,10 +23,15 @@ from rest_framework_simplejwt.views import (
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 from django.conf import settings
 from django.conf.urls.static import static
+from django.http import HttpResponse
+
+
+def health_check(request):
+    return HttpResponse("OK", status=200)
 
 
 urlpatterns = [
-    
+    path('', health_check),
     path('api/', include('tech_school.urls')),
     path('api/', include('core.urls')),
     path('api/', include('analytics.urls')),

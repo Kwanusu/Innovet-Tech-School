@@ -11,8 +11,11 @@ from rest_framework.permissions import AllowAny
 from django.core.mail import send_mail
 from django.conf import settings
 from analytics.models import SystemLog
+from django.http import HttpResponse
 
 User = get_user_model()
+
+
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
