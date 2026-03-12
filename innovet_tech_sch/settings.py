@@ -30,8 +30,12 @@ SECRET_KEY = config('SECRET_KEY')
 # Cast string "True" from .env to a Python Boolean True
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-# Parse a comma-separated string into a Python list
-ALLOWED_HOSTS = ['innovet-tech-sch.onrender.com', 'localhost', '127.0.0.1', '.vercel.app']
+RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+
+ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+
+if RENDER_EXTERNAL_HOSTNAME:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 
 
 
