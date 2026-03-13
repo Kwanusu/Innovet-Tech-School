@@ -11,7 +11,7 @@ from .models import Task, Course, TaskSubmission, CalendarEvent, Enrollment, Top
 from .serializers import (
     CourseDetailSerializer, TaskSerializer, EnrollmentSerializer, 
     CourseSerializer, CourseCreateSerializer, CalendarEventSerializer, 
-    TaskSubmissionSerializer, LessonProgress, LessonSerializer
+    TaskSubmissionSerializer, LessonProgress, LessonSerializer, StaffOnboardingSerializer
 )
 from datetime import timedelta
 from django.utils import timezone
