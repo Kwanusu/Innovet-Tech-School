@@ -1,51 +1,67 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from rest_framework import viewsets, permissions
-from rest_framework.decorators import action
-from rest_framework.response import Response
+from .models import Profile
 
 User = get_user_model()
 
 class UserSerializer(serializers.ModelSerializer):
-    """
-    Used for profile viewing and the 'Me' endpoint.
-    Includes role-based logic for the Redux frontend.
-    """
     role_display = serializers.CharField(source='get_role_display', read_only=True)
-    is_teacher = serializers.BooleanField(read_only=True)
+    bio = serializers.CharField(source='profile.bio', read_only=True)
+    avatar = serializers.ImageField(source='profile.avatar', read_only=True)
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 
             'last_name', 'role', 'role_display', 
-            'is_teacher', 'bio', 'date_joined'
+            'is_teacher', 'bio', 'avatar', 'date_joined'
         ]
         read_only_fields = ['role', 'username', 'date_joined']
-
+        
 class RegisterSerializer(serializers.ModelSerializer):
-    """
-    Specifically for creating new accounts. 
-    Handles secure password hashing.
-    """
-    password = serializers.CharField(
-        write_only=True, 
-        required=True, 
-        style={'input_type': 'password'}
-    )
+    password = serializers.CharField(write_only=True, required=True)
+
+    bio = serializers.CharField(write_only=True, required=False)
 
     class Meta:
         model = User
         fields = ['username', 'email', 'password', 'first_name', 'last_name', 'role', 'bio']
 
     def create(self, validated_data):
-        user = User.objects.create_user(
-            username=validated_data['username'],
-            email=validated_data.get('email', ''),
-            password=validated_data['password'],
-            first_name=validated_data.get('first_name', ''),
-            last_name=validated_data.get('last_name', ''),
-            role=validated_data.get('role', User.Role.STUDENT),
-            bio=validated_data.get('bio', '')
-        )
-        return user
+
+        bio = validated_data.pop('bio', '')
+   
+        user = User.objects.create_user(**validated_data)
+    
+        if bio:
+            user.profile.bio = bio
+            user.profile.save()
+            
+        return user 
+
+class ProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Profile
+        fields = ['bio', 'location', 'website', 'avatar']
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    profile = ProfileSerializer()
+
+    class Meta:
+        model = User
+        fields = ['username', 'first_name', 'last_name', 'profile']
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop('profile', None)
+    
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if profile_data:
+            profile = instance.profile
+            for attr, value in profile_data.items():
+                setattr(profile, attr, value)
+            profile.save()
+
+        return instance
