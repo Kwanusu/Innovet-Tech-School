@@ -1,8 +1,9 @@
+from django.db import models
 from rest_framework import viewsets, permissions
 from .models import SystemLog
 from .serializers import SystemLogSerializer
     
-from django.db.models import Count, Q, Avg
+from django.db.models import Count, Q
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAdminUser
