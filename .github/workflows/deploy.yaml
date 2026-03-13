@@ -33,9 +33,9 @@ jobs:
           python-version: '3.11'
       - name: Run Pytest
         run: |
-          pip install -r backend/requirements.txt
+          pip install -r requirements.txt
           pip install pytest pytest-django
-          cd backend && pytest
+          pytest
         env:
           DATABASE_URL: "sqlite:///:memory:"
 
@@ -82,7 +82,7 @@ jobs:
           # Use the ARN from the Terraform output above
           role-to-assume: arn:aws:iam::861556843110:role/github-actions-oidc-role
           aws-region: us-east-1
-          
+
       - name: Terraform Init & Apply
         run: |
           cd terraform
