@@ -1,14 +1,18 @@
 module "vpc" {
   source       = "./modules/vpc"
+  project_name = var.project_name # (Root Var -> VPC Var)
 }
 
-# Call the EKS Module and pass VPC data
+module "rds" {
+  source               = "./modules/rds"
+  db_username          = var.db_username # (Root Var -> RDS Var)
+  # (VPC Output -> RDS Var) - This is the "Glue"
+  db_subnet_group_name = module.vpc.database_subnet_group_name 
+}
+
 module "eks" {
   source             = "./modules/eks"
-}
-
-# Call the Monitoring Module
-module "monitoring" {
-  source       = "./modules/monitoring"
-  depends_on   = [module.eks] # Wait for EKS to be ready
+  # (VPC Output -> EKS Var)
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnets
 }

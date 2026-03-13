@@ -2,8 +2,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: innovet-backend
+  labels:
+    app: innovet-backend
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: innovet-backend
@@ -12,8 +19,46 @@ spec:
       labels:
         app: innovet-backend
     spec:
+      imagePullSecrets:
+        - name: regcred
       containers:
       - name: django
-        image: innovet/backend:latest
+        image: ${{ secrets.DOCKER_HUB_USERNAME }}/innovet-backend:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
+        
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: url
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: django-secrets
+              key: secret-key
+        
+        # Health Checks
+        livenessProbe:
+          httpGet:
+            path: /health/
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health/
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        
+        # Resource Limits (Crucial for EKS cost management)
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"

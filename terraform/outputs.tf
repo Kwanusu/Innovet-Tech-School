@@ -29,3 +29,13 @@ output "grafana_url" {
   description = "The URL to access the Grafana dashboard (once LoadBalancer is provisioned)"
   value       = "Check your AWS Load Balancer for the DNS name"
 }
+
+output "database_endpoint" {
+  description = "The connection endpoint for the RDS instance"
+  value       = module.rds.db_instance_endpoint
+}
+
+output "database_subnet_group" {
+  description = "The subnet group name for RDS"
+  value       = module.vpc.database_subnet_group_name
+}
