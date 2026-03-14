@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model, authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
-from .serializers import UserSerializer, RegisterSerializer
+from .serializers import UserSerializer, RegisterSerializer, UserProfileSerializer
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
@@ -12,6 +12,8 @@ from django.core.mail import send_mail
 from django.conf import settings
 from analytics.models import SystemLog
 from django.http import HttpResponse
+from rest_framework import generics, permissions
+from .models import Profile
 
 User = get_user_model()
 
@@ -84,7 +86,8 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='forgot-password')
     def forgot_password(self, request):
         email = request.data.get('email')
-        user = User.objects.filter(email=email).first()
+        # Use __iexact to avoid case-sensitivity issues
+        user = User.objects.filter(email__iexact=email).first()
         
         if user:
             token = default_token_generator.make_token(user)
@@ -94,7 +97,8 @@ class UserViewSet(viewsets.ModelViewSet):
             if settings.DEBUG:
                 frontend_url = "http://localhost:5173"
                 
-            reset_link = f"{frontend_url}/reset-password/{uid}/{token}/"
+            # URL-safe link without the trailing slash to prevent 301 mangling
+            reset_link = f"{frontend_url}/reset-password/{uid}/{token}"
             
             subject = "Reset Your Innovet Tech Password"
             message = (
@@ -107,6 +111,7 @@ class UserViewSet(viewsets.ModelViewSet):
             )
 
             try:
+                # This is the part that handles the actual "logging" or sending
                 send_mail(
                     subject,
                     message,
@@ -114,7 +119,9 @@ class UserViewSet(viewsets.ModelViewSet):
                     [email],
                     fail_silently=False,
                 )
+                print(f"DEBUG: Reset link generated for {email}: {reset_link}")
             except Exception as e:
+                # If this prints, your SMTP or Console backend settings are wrong
                 print(f"Email failed: {e}") 
 
             response_data = {"message": "If an account exists, a reset link has been sent."}
@@ -123,12 +130,12 @@ class UserViewSet(viewsets.ModelViewSet):
                 
             return Response(response_data, status=status.HTTP_200_OK)
 
-        return Response({"message": "If an account exists, a link has been sent."}, status=status.HTTP_200_OK)
-
-    @action(detail=False, methods=['get'], url_path='validate-token/(?P<uidb64>[^/.]+)/(?P<token>[^/.]+)')
+        # We return the same message even if user doesn't exist for security (anti-enumeration)
+        return Response({"message": "If an account exists, a reset link has been sent."}, status=status.HTTP_200_OK)
+    @action(detail=False, methods=['get'], url_path=r'validate-token/(?P<uidb64>[^/]+)/(?P<token>[^/]+)/?')
     def validate_reset_token(self, request, uidb64=None, token=None):
-        """Step 2: Check link validity before showing forms"""
         try:
+            # uidb64 might have padding stripped, but decode handles it
             uid = force_str(urlsafe_base64_decode(uidb64))
             user = User.objects.get(pk=uid)
             if default_token_generator.check_token(user, token):
@@ -137,8 +144,10 @@ class UserViewSet(viewsets.ModelViewSet):
             pass
         return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=False, methods=['post'], url_path='reset-password-confirm/(?P<uidb64>[^/.]+)/(?P<token>[^/.]+)')
+    # FIX 3: Apply same regex fix to the confirmation endpoint
+    @action(detail=False, methods=['post'], url_path=r'reset-password-confirm/(?P<uidb64>[^/]+)/(?P<token>[^/]+)/?')
     def reset_password_confirm(self, request, uidb64=None, token=None):
+        # ... (rest of the logic remains same)
         """Step 3: Finalize password change"""
         try:
             uid = force_str(urlsafe_base64_decode(uidb64))
@@ -154,3 +163,21 @@ class UserViewSet(viewsets.ModelViewSet):
             user.save()
             return Response({"message": "Password reset successful"}, status=status.HTTP_200_OK)
         return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
+    
+
+class ProfileUpdateView(generics.RetrieveUpdateAPIView):
+    serializer_class = UserProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user 
+    
+    @action(detail=False, methods=['patch'], url_path='profile/update')
+    def update_profile(self, request):
+        user = request.user
+        # Logic to update the user and the linked profile
+        serializer = UserSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)   

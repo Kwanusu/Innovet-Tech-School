@@ -12,8 +12,12 @@ class User(AbstractUser):
         
     role = models.CharField(max_length=25, choices=Role.choices, default=Role.ADMIN)
     email = models.EmailField(unique=True)
+    
+    @property
+    def is_teacher(self):
+        """Quick check to verify if the user has teacher-level permissions."""
+        return self.role == self.Role.TEACHER 
 
-# The new Profile model
 class Profile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='profile')
     bio = models.TextField(blank=True, help_text="Short biography of the user.")
@@ -23,11 +27,6 @@ class Profile(models.Model):
 
     def __str__(self):
         return f"Profile for {self.user.username}"
-    
-    @property
-    def is_teacher(self):
-        """Quick check to verify if the user has teacher-level permissions."""
-        return self.role == self.Role.TEACHER 
 
 # --- SIGNALS ---
 @receiver(post_save, sender=User)
@@ -66,3 +65,21 @@ class AuditLog(models.Model):
     def __str__(self):
         user_str = self.user.username if self.user else "System/Deleted User"
         return f"{self.timestamp.strftime('%Y-%m-%d %H:%M')} - {user_str}: {self.action_type}"
+    
+# models.py
+class Transaction(models.Model):
+    PAYMENT_METHODS = [
+        ('MPESA', 'M-Pesa'),
+        ('CARD', 'Credit/Debit Card'),
+        ('PAYPAL', 'PayPal'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    course = models.ForeignKey('Course', on_delete=models.CASCADE)
+    tx_ref = models.CharField(max_length=100, unique=True) # Your internal ID
+    transaction_id = models.CharField(max_length=100, null=True) # Gateway's ID
+    method = models.CharField(max_length=20, choices=PAYMENT_METHODS)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default='KES') # KES or USD
+    status = models.CharField(max_length=20, default='PENDING')
+    created_at = models.DateTimeField(auto_now_add=True)    

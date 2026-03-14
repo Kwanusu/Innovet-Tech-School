@@ -101,7 +101,6 @@ jobs:
           kubectl apply -f k8s/backend-deploy.yml
           kubectl rollout restart deployment/django-backend
 
-
       - name: Create Docker Hub Secret
         run: |
             kubectl create secret docker-registry regcred \
