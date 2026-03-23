@@ -43,6 +43,9 @@ jobs:
     name: Build, Scan & Push Backend
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # Required for SARIF upload
     steps:
       - uses: actions/checkout@v4
 
@@ -52,69 +55,67 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Verify backend folder exists
-        run: ls -R 
-
       - name: Build Backend Image
-        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest .
-
-      - name: Run Trivy Scan (Generate SARIF)
         run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v $HOME/.cache/trivy:/root/.cache/trivy \
-            -v $(pwd):/app \
-            aquasec/trivy:0.50.1 image \
-            --scanners vuln \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            --format sarif \
-            --output /app/trivy-results.sarif \
-            ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
-            - name: Push Backend Image
-              if: success()
-              run: docker push ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest \
+                       -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:${{ github.sha }} .
 
-      - name: Fail on CRITICAL vulnerabilities only
+      - name: Run Trivy Scan (SARIF Report)
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          image-ref: '${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Fail on CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          image-ref: '${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL'
+
+      - name: Push Backend Image
+        if: success()
         run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v $HOME/.cache/trivy:/root/.cache/trivy \
-            aquasec/trivy:0.50.1 image \
-            --scanners vuln \
-            --severity CRITICAL \
-            --ignore-unfixed \
-            --exit-code 1 \
-            ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest        
+          docker push ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/innovet-backend:${{ github.sha }}
 
   deploy:
     name: AWS Infrastructure & K8s Deployment
     needs: build-and-secure
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for OIDC
+      contents: read
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ✅ Install Terraform (explicit, stable)
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      # ✅ Install kubectl (explicit version control)
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: 'latest'
 
-      # ✅ AWS Auth via OIDC (good practice already)
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::861556843110:role/github-actions-oidc-role
           aws-region: us-east-1
 
-      # ✅ Terraform with safety
       - name: Terraform Init & Apply
         working-directory: terraform
         run: |
@@ -124,11 +125,9 @@ jobs:
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
 
-      # ✅ Connect to EKS
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name innovet-tech-cluster
 
-      # ✅ Create Docker secret BEFORE deployment
       - name: Create Docker Hub Secret in K8s
         run: |
           kubectl create secret docker-registry regcred \
@@ -137,18 +136,15 @@ jobs:
             --docker-password=${{ secrets.DOCKER_PASSWORD }} \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      # ✅ Deploy manifests
-      - name: Deploy Backend to EKS
+      - name: Deploy manifests
         run: |
           kubectl apply -f k8s/services.yml
           kubectl apply -f k8s/ingress.yml
           kubectl apply -f k8s/backend-deploy.yml
 
-      # ✅ Ensure new image is pulled
       - name: Force rollout restart
         run: kubectl rollout restart deployment/django-backend
 
-      # ✅ 🚨 CRITICAL: Wait for deployment success
       - name: Verify Deployment Rollout
         run: |
           kubectl rollout status deployment/django-backend --timeout=120s
