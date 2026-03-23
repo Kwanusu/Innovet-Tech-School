@@ -389,7 +389,7 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
             enrollment = Enrollment.objects.create(
                 student=student, 
                 course=course,
-                enrollment_type='MANUAL' # Good for tracking paid vs manual
+                # enrollment_type='MANUAL' # Good for tracking paid vs manual
             )
 
             # Ensure the ManyToMany field on Course is also updated
