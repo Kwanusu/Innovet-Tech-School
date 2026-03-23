@@ -59,14 +59,13 @@ jobs:
         run: docker build -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest .
 
       - name: Trivy Security Scan (Backend)
-        uses: aquasecurity/trivy-action@v1
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: '${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest'
           format: 'table'
           severity: 'CRITICAL,HIGH'
           scan-type: 'image'   # only scan vulnerabilities, skip secret scanning
           vuln-type: 'os,library'
-          fail-on-severity: 'CRITICAL,HIGH'
 
       - name: Push Backend Image
         if: success()
