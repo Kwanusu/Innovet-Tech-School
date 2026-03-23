@@ -1,5 +1,6 @@
 import json
-from django.db.models import Avg
+from django.db.models import Avg, Count
+from requests import Response
 from rest_framework import serializers
 from .models import (
     Course, Enrollment, CalendarEvent, Task, 
@@ -9,6 +10,7 @@ from analytics.models import SystemLog
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.utils.crypto import get_random_string
+from rest_framework.decorators import action
 
 User = get_user_model()
 
@@ -62,11 +64,12 @@ class CourseSerializer(serializers.ModelSerializer):
     """Base representation of a course with nested read-only topic data."""
     teacher = serializers.StringRelatedField(read_only=True)
     topics = serializers.SerializerMethodField() 
+    is_enrolled = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
         fields = [
-            'id', 'title', 'code', 'description', 
+            'id', 'title', 'code', 'description', 'is_enrolled', 
             'price', 'is_published', 'thumbnail', 'teacher', 'topics'
         ]
 
@@ -89,6 +92,11 @@ class CourseSerializer(serializers.ModelSerializer):
         if is_published and float(price) < 0:
             raise serializers.ValidationError({"price": "Published courses must have a non-negative price."})
         return data 
+    def get_is_enrolled(self, obj):
+        user = self.context.get('request').user
+        if user.is_authenticated:
+            return obj.enrolled_students.filter(id=user.id).exists()
+        return False
 
 class LessonSerializer(serializers.ModelSerializer):
     """ Serializes individual Lesson data including user-specific completion status."""
@@ -202,6 +210,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             
             return round((completed_count / total_lessons) * 100)
         return 0
+
 class EnrollmentSerializer(serializers.ModelSerializer):
     """Tracks student progress and calculates cumulative performance metrics."""
     student_name = serializers.ReadOnlyField(source='student.username')
@@ -216,13 +225,35 @@ class EnrollmentSerializer(serializers.ModelSerializer):
         ]
 
     def get_overall_progress(self, obj):
-        """Aggregates TaskSubmission data to determine total course completion percentage."""
-        avg = TaskSubmission.objects.filter(
+        """
+        Aggregates TaskSubmission data to determine completion percentage.
+        Local import prevents circular dependency issues during startup.
+        """
+        # IMPORT HERE to avoid the circular import crash
+        from .models import TaskSubmission 
+
+        metrics = TaskSubmission.objects.filter(
             student=obj.student, 
             task__course=obj.course
-        ).aggregate(Avg('progress_percentage'))['progress_percentage__avg']
+        ).aggregate(average_progress=Avg('progress_percentage'))
         
-        return round(avg, 2) if avg is not None else 0
+        avg = metrics.get('average_progress')
+        return round(avg, 2) if avg is not None else 0.0
+    
+    @action(detail=False, methods=['get'], url_path='enrolled-courses')
+    def enrolled_courses(self, request):        
+        enrolled_ids = Enrollment.objects.filter(student=request.user).values_list('course_id', flat=True)
+        # courses = Course.objects.filter(id__in=enrolled_ids).annotate(
+        #     student_count=Count('enrolled_students')
+        # )
+        courses = Course.objects.all().filter(enrolled_students=request.user, id__in=enrolled_ids).annotate(
+        student_count=Count('enrolled_students')
+        )                   
+    
+        print(f"DEBUG: Found {courses.count()} courses for student {request.user.username}") # Check your console!
+        
+        serializer = self.get_serializer(courses, many=True, context={'request': request})
+        return Response(serializer.data)
     
 class CourseCreateSerializer(serializers.ModelSerializer):
     """Handles bulk creation of a course including nested Topics and Lessons."""

@@ -146,12 +146,33 @@ class Enrollment(models.Model):
     )
     grade = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     enrolled_at = models.DateTimeField(auto_now_add=True)
-
+    
     class Meta:
         unique_together = ('student', 'course')
+    
+    @property
+    def progress_percentage(self):
+        total_lessons = Lesson.objects.filter(topic__course=self.course).count()
+        if total_lessons == 0:
+            return 0
+        
+        completed_lessons = LessonCompletion.objects.filter(
+            student=self.student, 
+            lesson__topic__course=self.course
+        ).count()
+        
+        return round((completed_lessons / total_lessons) * 100)    
 
     def __str__(self):
         return f"{self.student.email} in {self.course.title}"
+    
+class LessonCompletion(models.Model):
+    student = models.ForeignKey('tech_school.User', on_delete=models.CASCADE)
+    lesson = models.ForeignKey(Lesson, on_delete=models.CASCADE)
+    completed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('student', 'lesson')
 
 class CalendarEvent(models.Model):
     """Scheduled events for a course, such as live lectures or exams."""

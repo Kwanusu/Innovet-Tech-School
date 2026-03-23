@@ -3,6 +3,7 @@ from django.contrib.auth.models import AbstractUser
 from django.conf import settings
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from core.models import Course
 
 class User(AbstractUser):
     class Role(models.TextChoices):
@@ -66,7 +67,6 @@ class AuditLog(models.Model):
         user_str = self.user.username if self.user else "System/Deleted User"
         return f"{self.timestamp.strftime('%Y-%m-%d %H:%M')} - {user_str}: {self.action_type}"
     
-# models.py
 class Transaction(models.Model):
     PAYMENT_METHODS = [
         ('MPESA', 'M-Pesa'),
@@ -75,7 +75,7 @@ class Transaction(models.Model):
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    course = models.ForeignKey('Course', on_delete=models.CASCADE)
+    course = models.ForeignKey(Course, on_delete=models.CASCADE)
     tx_ref = models.CharField(max_length=100, unique=True) # Your internal ID
     transaction_id = models.CharField(max_length=100, null=True) # Gateway's ID
     method = models.CharField(max_length=20, choices=PAYMENT_METHODS)

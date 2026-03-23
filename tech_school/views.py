@@ -13,7 +13,19 @@ from django.conf import settings
 from analytics.models import SystemLog
 from django.http import HttpResponse
 from rest_framework import generics, permissions
-from .models import Profile
+from .models import Profile, Transaction   
+import requests
+import uuid
+from django.shortcuts import redirect
+import json
+import hmac
+import hashlib
+from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.views import APIView
+from .models import Transaction 
+from core.models import Enrollment
+import os
 
 User = get_user_model()
 
@@ -93,9 +105,10 @@ class UserViewSet(viewsets.ModelViewSet):
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             
-            frontend_url = "https://innovet-tech-school.vercel.app"
-            if settings.DEBUG:
-                frontend_url = "http://localhost:5173"
+            frontend_url = os.environ.get(
+                "FRONTEND_URL",
+                "http://localhost:5173"
+            )
                 
             # URL-safe link without the trailing slash to prevent 301 mangling
             reset_link = f"{frontend_url}/reset-password/{uid}/{token}"
@@ -109,9 +122,10 @@ class UserViewSet(viewsets.ModelViewSet):
                 f"If you didn't request this, you can safely ignore this email.\n"
                 f"This link will expire in 24 hours."
             )
+            import logging
+            logger = logging.getLogger(__name__)
 
             try:
-                # This is the part that handles the actual "logging" or sending
                 send_mail(
                     subject,
                     message,
@@ -121,8 +135,11 @@ class UserViewSet(viewsets.ModelViewSet):
                 )
                 print(f"DEBUG: Reset link generated for {email}: {reset_link}")
             except Exception as e:
-                # If this prints, your SMTP or Console backend settings are wrong
-                print(f"Email failed: {e}") 
+                logger.error(f"Email failed for {email}: {str(e)}")
+                return Response(
+                    {"error": "Email service temporarily unavailable"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
             response_data = {"message": "If an account exists, a reset link has been sent."}
             if settings.DEBUG:
@@ -130,12 +147,10 @@ class UserViewSet(viewsets.ModelViewSet):
                 
             return Response(response_data, status=status.HTTP_200_OK)
 
-        # We return the same message even if user doesn't exist for security (anti-enumeration)
         return Response({"message": "If an account exists, a reset link has been sent."}, status=status.HTTP_200_OK)
     @action(detail=False, methods=['get'], url_path=r'validate-token/(?P<uidb64>[^/]+)/(?P<token>[^/]+)/?')
     def validate_reset_token(self, request, uidb64=None, token=None):
         try:
-            # uidb64 might have padding stripped, but decode handles it
             uid = force_str(urlsafe_base64_decode(uidb64))
             user = User.objects.get(pk=uid)
             if default_token_generator.check_token(user, token):
@@ -144,10 +159,8 @@ class UserViewSet(viewsets.ModelViewSet):
             pass
         return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
 
-    # FIX 3: Apply same regex fix to the confirmation endpoint
     @action(detail=False, methods=['post'], url_path=r'reset-password-confirm/(?P<uidb64>[^/]+)/(?P<token>[^/]+)/?')
     def reset_password_confirm(self, request, uidb64=None, token=None):
-        # ... (rest of the logic remains same)
         """Step 3: Finalize password change"""
         try:
             uid = force_str(urlsafe_base64_decode(uidb64))
@@ -164,7 +177,6 @@ class UserViewSet(viewsets.ModelViewSet):
             return Response({"message": "Password reset successful"}, status=status.HTTP_200_OK)
         return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
     
-
 class ProfileUpdateView(generics.RetrieveUpdateAPIView):
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -175,9 +187,96 @@ class ProfileUpdateView(generics.RetrieveUpdateAPIView):
     @action(detail=False, methods=['patch'], url_path='profile/update')
     def update_profile(self, request):
         user = request.user
-        # Logic to update the user and the linked profile
         serializer = UserSerializer(user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
-        return Response(serializer.errors, status=400)   
+        return Response(serializer.errors, status=400)  
+
+@action(detail=True, methods=['post'], url_path='initialize-paystack')
+def initialize_paystack(self, request, pk=None):
+    course = self.get_object()
+    url = "https://api.paystack.co/transaction/initialize"
+    
+    headers = {
+        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    amount_in_cents = int(course.price * 100)
+    
+    payload = {
+        "email": request.user.email,
+        "amount": amount_in_cents,
+        "currency": "KES",
+        "callback_url": "https://purposeless-unheeding-zula.ngrok-free.dev/api/payments/paystack-callback-bridge/",        "metadata": {
+            "course_id": course.id,
+            "user_id": request.user.id,
+            "cart_id": f"INV-{request.user.id}-{course.id}"
+        }
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+    res_data = response.json()
+
+    if res_data['status']:
+        Transaction.objects.create(
+            user=request.user,
+            course=course,
+            tx_ref=res_data['data']['reference'],
+            amount=course.price,
+            status='PENDING'
+        )
+        return Response({"link": res_data['data']['authorization_url']})
+    
+    return Response({"error": "Paystack initialization failed"}, status=400)
+
+def payment_verify_redirect(request):
+    reference = request.GET.get('reference')
+    return redirect(f"http://localhost:5173/payment-verify?reference={reference}")
+
+class PaystackWebhookView(APIView):
+    permission_classes = [AllowAny] 
+
+    @csrf_exempt
+    def post(self, request, *args, **kwargs):
+        paystack_signature = request.headers.get('x-paystack-signature')
+        secret = settings.PAYSTACK_SECRET_KEY.encode('utf-8')
+        
+        computed_hmac = hmac.new(
+            secret, 
+            request.body, 
+            hashlib.sha512
+        ).hexdigest()
+
+        if computed_hmac != paystack_signature:
+            return HttpResponse(status=401)
+
+        payload = request.data
+        event = payload.get('event')
+
+        if event == "charge.success":
+            data = payload.get('data')
+            reference = data.get('reference')
+            
+            try:
+                transaction = Transaction.objects.get(tx_ref=reference)
+                if transaction.status == 'PENDING':
+                    transaction.status = 'COMPLETED'
+                    transaction.save()
+
+                    Enrollment.objects.get_or_create(
+                        user=transaction.user, 
+                        course=transaction.course
+                    )
+            except Transaction.DoesNotExist:
+                pass
+
+        return HttpResponse(status=200)
+
+def paystack_callback_bridge(request):
+    """
+    Acts as the HTTPS -> HTTP bridge for local development.
+    """
+    reference = request.GET.get('reference')
+    return redirect(f"http://localhost:5173/payment-verify?reference={reference}")

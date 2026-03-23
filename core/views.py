@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.exceptions import PermissionDenied 
+from rest_framework.exceptions import PermissionDenied, ValidationError 
 from rest_framework.permissions import IsAuthenticated, IsAdminUser      
 import json
 from django.db import transaction
@@ -17,7 +17,7 @@ from datetime import timedelta
 from django.utils import timezone
 from rest_framework.views import APIView
 import secrets
-
+from tech_school.models import Transaction
 
 User = get_user_model()
 
@@ -107,31 +107,54 @@ class CourseViewSet(viewsets.ModelViewSet):
     serializer_class = CourseSerializer
 
     def get_queryset(self):
-        """
-        Filters courses based on user role:
-        - Anonymous: Publicly published free courses.
-        - Teacher: Courses where they are the primary instructor.
-        - Student: Enrolled courses or public free courses.
-        - Admin: All courses.
-        """
         user = self.request.user
         base_queryset = Course.objects.annotate(student_count=Count('enrolled_students'))
 
+        # If we are inside the 'enrolled_courses' action, we want a wider net
+        if self.action == 'enrolled_courses':
+            return base_queryset.filter(enrolled_students=user)
+
         if user.is_anonymous:
             return base_queryset.filter(is_published=True, price=0)
+        
         if user.role == 'TEACHER':
             return base_queryset.filter(teacher=user)
+            
         if user.role == 'STUDENT':
+            # This logic is good, but ensure your test course is actually IS_PUBLISHED=True
             return base_queryset.filter(Q(enrolled_students=user) | Q(is_published=True, price=0)).distinct()
+            
         return base_queryset.all()
 
     def get_permissions(self):
-        """
-        Allows anyone to view course lists/details, but requires authentication for modifications.
-        """
+        # Add your custom GET actions to the AllowAny if you want them public,
+        # OR ensure they are explicitly handled.
+        if self.action in ['list', 'retrieve', 'enrolled_courses', 'my_courses']:
+            return [permissions.IsAuthenticated()] # These MUST be authenticated
+        
         if self.action in ['list', 'retrieve']:
-            return [permissions.AllowAny()]
+             return [permissions.AllowAny()]
+             
         return [permissions.IsAuthenticated()]
+
+    @action(detail=False, methods=['get'], url_path='enrolled-courses')
+    def enrolled_courses(self, request):
+        # We call self.get_queryset() here to respect the logic above
+        courses = self.get_queryset().distinct()
+        
+        # DEBUG: Check your terminal!
+        print(f"User: {request.user} | Role: {request.user.role} | Count: {courses.count()}")
+        
+        serializer = self.get_serializer(courses, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    # def get_permissions(self):
+    #     """
+    #     Allows anyone to view course lists/details, but requires authentication for modifications.
+    #     """
+    #     if self.action in ['list', 'retrieve']:
+    #         return [permissions.AllowAny()]
+    #     return [permissions.IsAuthenticated()]
 
     def get_serializer_class(self):
         """
@@ -215,7 +238,7 @@ class CourseViewSet(viewsets.ModelViewSet):
 
                 course.topics.exclude(id__in=keep_topic_ids).delete()
 
-        serializer = CourseSerializer(course)
+        serializer = CourseSerializer(course, context={'request': request})
         return Response(serializer.data)    
 
     @action(detail=False, methods=['get'], url_path='my-courses')
@@ -230,23 +253,76 @@ class CourseViewSet(viewsets.ModelViewSet):
         courses = Course.objects.filter(teacher=request.user).annotate(
             student_count=Count('enrolled_students')
         )
-        serializer = self.get_serializer(courses, many=True)
+        serializer = self.get_serializer(courses, many=True, context={'request': request})
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='enrolled-courses')
-    def enrolled_courses(self, request):
-        """
-        GET /api/courses/enrolled-courses/
-        Dashboard endpoint for students to view courses they are currently enrolled in.
-        """
-        if request.user.role != 'STUDENT':
-            return Response({"detail": "Access restricted to students."}, status=403)
+    # @action(detail=False, methods=['get'], url_path='enrolled-courses')
+    # def enrolled_courses(self, request):
+    #     """
+    #     GET /api/courses/enrolled-courses/
+    #     Dashboard endpoint for students to view courses they are currently enrolled in.
+    #     """
+    #     if request.user.role != 'STUDENT':
+    #         return Response({"detail": "Access restricted to students."}, status=403)
 
-        courses = Course.objects.filter(enrolled_students=request.user).annotate(
-            student_count=Count('enrolled_students')
-        ).distinct()
-        serializer = self.get_serializer(courses, many=True)
-        return Response(serializer.data)
+    #     courses = Course.objects.filter(enrolled_students=request.user).annotate(
+    #         student_count=Count('enrolled_students')
+    #     ).distinct()
+    #     serializer = self.get_serializer(courses, many=True, context={'request': request})
+    #     return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'], url_path='initialize-paystack')
+    def initialize_paystack(self, request, pk=None):
+        """
+        POST /api/courses/{id}/initialize-paystack/
+        Initializes a Paystack transaction for a specific course.
+        """
+        course = self.get_object()
+        user = request.user
+
+        if course.enrolled_students.filter(id=user.id).exists():
+            return Response({"error": "You are already enrolled in this course."}, status=400)
+
+        url = "https://api.paystack.co/transaction/initialize"
+        headers = {
+            "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        amount_in_cents = int(course.price * 100)
+        
+        payload = {
+            "email": user.email,
+            "amount": amount_in_cents,
+            "currency": "KES",
+            "callback_url": "https://purposeless-unheeding-zula.ngrok-free.dev/api/payments/paystack-callback-bridge/",
+            "metadata": {
+                "course_id": course.id,
+                "user_id": user.id,
+                "course_title": course.title
+            }
+        }
+
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            res_data = response.json()
+
+            if res_data.get('status'):
+                # 3. Create a local record of the pending transaction
+                Transaction.objects.create(
+                    user=user,
+                    course=course,
+                    tx_ref=res_data['data']['reference'],
+                    amount=course.price,
+                    status='PENDING'
+                )
+                # Return the checkout link to the React frontend
+                return Response({"link": res_data['data']['authorization_url']})
+            
+            return Response({"error": "Paystack was unable to initialize."}, status=400)
+
+        except requests.exceptions.RequestException as e:
+            return Response({"error": f"Connection to Paystack failed: {str(e)}"}, status=503)
 
 
 class TaskViewSet(viewsets.ModelViewSet):
@@ -269,32 +345,69 @@ class TaskViewSet(viewsets.ModelViewSet):
             return Task.objects.filter(course__teacher=user)
         return Task.objects.all()
 
-
 class EnrollmentViewSet(viewsets.ModelViewSet):
     """
     ViewSet to manage student enrollments.
-    Allows staff to create records and students to view their own enrollment history.
+    Handles manual teacher enrollment and student history.
     """
     serializer_class = EnrollmentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        Students see only their own enrollment records; Staff see all.
-        """
         user = self.request.user
+        # Students only see their own progress
         if user.role == 'STUDENT':
-            return Enrollment.objects.filter(student=user)
-        return Enrollment.objects.all()
+            return Enrollment.objects.filter(student=user).select_related('course')
+        # Staff/Teachers see everything
+        return Enrollment.objects.all().select_related('student', 'course')
+
+    def create(self, request, *args, **kwargs):
+        """
+        Custom create to handle enrollment via email from the Quick Enroll modal.
+        """
+        if request.user.role not in ['ADMIN', 'TEACHER']:
+            raise PermissionDenied("Only instructors or admins can manually enroll students.")
+
+        email = request.data.get('email')
+        course_id = request.data.get('courseId') 
+
+        if not email or not course_id:
+            raise ValidationError({"error": "Both email and courseId are required."})
+
+        try:
+            student = User.objects.get(email=email)
+            course = Course.objects.get(id=course_id)
+
+            # Check if already enrolled to prevent duplicates
+            if Enrollment.objects.filter(student=student, course=course).exists():
+                return Response(
+                    {"error": "This student is already enrolled in this course."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Create the enrollment
+            enrollment = Enrollment.objects.create(
+                student=student, 
+                course=course,
+                enrollment_type='MANUAL' # Good for tracking paid vs manual
+            )
+
+            # Ensure the ManyToMany field on Course is also updated
+            course.enrolled_students.add(student)
+
+            serializer = self.get_serializer(enrollment)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except User.DoesNotExist:
+            return Response({"error": "No account found with this email."}, status=404)
+        except Course.DoesNotExist:
+            return Response({"error": "Course not found."}, status=404)
 
     def perform_create(self, serializer):
-        """
-        Restricts enrollment creation to Admins or Teachers.
-        """
+        # Fallback for standard POST requests
         if self.request.user.role not in ['ADMIN', 'TEACHER']:
             raise PermissionDenied("Only staff can enroll students.")
         serializer.save()
-
 
 class CalendarEventViewSet(viewsets.ModelViewSet):
     """
