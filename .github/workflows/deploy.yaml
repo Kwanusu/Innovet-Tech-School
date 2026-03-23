@@ -76,31 +76,43 @@ jobs:
     needs: build-and-secure
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ✅ Install Terraform (explicit, stable)
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # ✅ Install kubectl (explicit version control)
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      # ✅ AWS Auth via OIDC (good practice already)
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::861556843110:role/github-actions-oidc-role
           aws-region: us-east-1
 
+      # ✅ Terraform with safety
       - name: Terraform Init & Apply
+        working-directory: terraform
         run: |
-          cd terraform
           terraform init
+          terraform validate
           terraform apply -auto-approve
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
 
+      # ✅ Connect to EKS
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name innovet-tech-cluster
 
-      - name: Deploy Backend to EKS
-        run: |
-          kubectl apply -f k8s/services.yml
-          kubectl apply -f k8s/ingress.yml
-          kubectl apply -f k8s/backend-deploy.yml
-          kubectl rollout restart deployment/django-backend
-
+      # ✅ Create Docker secret BEFORE deployment
       - name: Create Docker Hub Secret in K8s
         run: |
           kubectl create secret docker-registry regcred \
@@ -108,3 +120,19 @@ jobs:
             --docker-username=${{ secrets.DOCKER_USERNAME }} \
             --docker-password=${{ secrets.DOCKER_PASSWORD }} \
             --dry-run=client -o yaml | kubectl apply -f -
+
+      # ✅ Deploy manifests
+      - name: Deploy Backend to EKS
+        run: |
+          kubectl apply -f k8s/services.yml
+          kubectl apply -f k8s/ingress.yml
+          kubectl apply -f k8s/backend-deploy.yml
+
+      # ✅ Ensure new image is pulled
+      - name: Force rollout restart
+        run: kubectl rollout restart deployment/django-backend
+
+      # ✅ 🚨 CRITICAL: Wait for deployment success
+      - name: Verify Deployment Rollout
+        run: |
+          kubectl rollout status deployment/django-backend --timeout=120s
