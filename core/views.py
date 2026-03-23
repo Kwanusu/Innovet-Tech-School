@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 import secrets
 from tech_school.models import Transaction
 import requests
+from django.conf import settings
 
 User = get_user_model()
 
