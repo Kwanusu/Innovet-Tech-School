@@ -1,30 +1,33 @@
-# Stage 1: Build dependencies
-FROM python:3.11-slim as builder
+# Backend Dockerfile
 
+# Use a slim, supported Python image
+FROM python:3.13-slim-bullseye
+
+# Set working directory
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev gcc && \
-    rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
+# Copy only requirements first for caching
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Stage 2: Production image
-FROM python:3.11-slim
+# Upgrade pip and install dependencies
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
 
-WORKDIR /app
-COPY --from=builder /install /usr/local
-RUN apt-get update && apt-get install -y libpq5 && rm -rf /var/lib/apt/lists/*
-
+# Copy project files
 COPY . .
 
-# Security: Never run as root in Kubernetes
-RUN useradd -m appuser && chown -R appuser /app
+# Use a non-root user
+RUN useradd -m appuser
 USER appuser
 
+# Expose Django port
 EXPOSE 8000
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "innovet_tech_sch.wsgi:application"]
+
+# Run the Django server (adjust for production w/ gunicorn)
+CMD ["gunicorn", "innovet.wsgi:application", "--bind", "0.0.0.0:8000"]

@@ -23,7 +23,7 @@ spec:
         - name: regcred
       containers:
       - name: django
-        image: ${{ secrets.DOCKER_HUB_USERNAME }}/innovet-backend:latest
+        image: ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -39,6 +39,24 @@ spec:
             secretKeyRef:
               name: django-secrets
               key: secret-key
+
+        - name: PAYSTACK_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: PAYSTACK_SECRET_KEY
+
+        - name: FLUTTERWAVE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: FLUTTERWAVE_CLIENT_SECRET
+              
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: STRIPE_SECRET_KEY      
         
         # Health Checks
         livenessProbe:

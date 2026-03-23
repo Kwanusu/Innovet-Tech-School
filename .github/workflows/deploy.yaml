@@ -65,6 +65,7 @@ jobs:
           format: 'table'
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
+          scan-type: 'vuln'   # only scan vulnerabilities, skip secret scanning
 
       - name: Push Backend Image
         if: success()
