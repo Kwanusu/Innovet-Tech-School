@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write # Required for SARIF upload
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -60,15 +60,17 @@ jobs:
           docker build -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest \
                        -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:${{ github.sha }} .
 
-      # Using version '0.29.0' (no 'v') forces Docker-based execution
-      # This fixes the "Unable to resolve aquasecurity/setup-trivy" error
+      # Use the raw Docker image. This avoids "Action version not found" errors.
       - name: Run Trivy Scan (SARIF Report)
-        uses: aquasecurity/trivy-action@0.29.0
-        with:
-          image-ref: '${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd):/app \
+            aquasec/trivy:0.50.1 image \
+            --format sarif \
+            --output /app/trivy-results.sarif \
+            --severity CRITICAL,HIGH \
+            ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
 
       - name: Upload Trivy scan results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -77,13 +79,14 @@ jobs:
           sarif_file: 'trivy-results.sarif'
 
       - name: Fail on CRITICAL vulnerabilities
-        uses: aquasecurity/trivy-action@0.29.0
-        with:
-          image-ref: '${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL'
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.50.1 image \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --severity CRITICAL \
+            ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
 
       - name: Push Backend Image
         if: success()
@@ -97,27 +100,22 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # Required for OIDC
+      id-token: write
       contents: read
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: 'latest'
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::861556843110:role/github-actions-oidc-role
           aws-region: us-east-1
-
       - name: Terraform Init & Apply
         working-directory: terraform
         run: |
@@ -126,10 +124,8 @@ jobs:
           terraform apply -auto-approve
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name innovet-tech-cluster
-
       - name: Create Docker Hub Secret in K8s
         run: |
           kubectl create secret docker-registry regcred \
@@ -137,16 +133,13 @@ jobs:
             --docker-username=${{ secrets.DOCKER_USERNAME }} \
             --docker-password=${{ secrets.DOCKER_PASSWORD }} \
             --dry-run=client -o yaml | kubectl apply -f -
-
       - name: Deploy manifests
         run: |
           kubectl apply -f k8s/services.yml
           kubectl apply -f k8s/ingress.yml
           kubectl apply -f k8s/backend-deploy.yml
-
       - name: Force rollout restart
         run: kubectl rollout restart deployment/django-backend
-
       - name: Verify Deployment Rollout
         run: |
           kubectl rollout status deployment/django-backend --timeout=120s
