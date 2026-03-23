@@ -58,13 +58,13 @@ jobs:
       - name: Build Backend Image
         run: docker build -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest .
 
-      - name: Run Trivy Scan (SARIF)
+      - name: Run Trivy Scan (Generate SARIF)
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v $HOME/.cache/trivy:/root/.cache/trivy \
             -v $(pwd):/app \
-            aquasec/trivy:latest image \
+            aquasec/trivy:0.50.1 image \
             --scanners vuln \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
@@ -74,6 +74,18 @@ jobs:
             - name: Push Backend Image
               if: success()
               run: docker push ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
+
+      - name: Fail on CRITICAL vulnerabilities only
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $HOME/.cache/trivy:/root/.cache/trivy \
+            aquasec/trivy:0.50.1 image \
+            --scanners vuln \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest        
 
   deploy:
     name: AWS Infrastructure & K8s Deployment
