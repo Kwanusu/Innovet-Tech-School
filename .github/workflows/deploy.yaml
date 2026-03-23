@@ -1,10 +1,10 @@
-name: DevSecOps CI/CD Pipeline
+name: Backend CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   quality-gate:
@@ -40,38 +40,38 @@ jobs:
           DATABASE_URL: "sqlite:///:memory:"
 
   build-and-secure:
-    name: Build, Scan & Push
+    name: Build, Scan & Push Backend
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Build images locally first to scan them
+      - name: Verify backend folder exists
+        run: ls -R ./backend
+
       - name: Build Backend Image
         run: docker build -t ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest ./backend
 
       - name: Trivy Security Scan (Backend)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.11.0
         with:
           image-ref: '${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest'
           format: 'table'
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
 
-      - name: Push Images
+      - name: Push Backend Image
         if: success()
-        run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
-          # Repeat build/scan/push for frontend similarly
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/innovet-backend:latest
 
   deploy:
-    name: AWS Infrastructure & K8s
+    name: AWS Infrastructure & K8s Deployment
     needs: build-and-secure
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -79,7 +79,6 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # Use the ARN from the Terraform output above
           role-to-assume: arn:aws:iam::861556843110:role/github-actions-oidc-role
           aws-region: us-east-1
 
@@ -94,18 +93,17 @@ jobs:
       - name: Update Kubeconfig
         run: aws eks update-kubeconfig --name innovet-tech-cluster
 
-      - name: Deploy to EKS
+      - name: Deploy Backend to EKS
         run: |
           kubectl apply -f k8s/services.yml
           kubectl apply -f k8s/ingress.yml
           kubectl apply -f k8s/backend-deploy.yml
           kubectl rollout restart deployment/django-backend
 
-      - name: Create Docker Hub Secret
+      - name: Create Docker Hub Secret in K8s
         run: |
-            kubectl create secret docker-registry regcred \
+          kubectl create secret docker-registry regcred \
             --docker-server=https://index.docker.io/v1/ \
             --docker-username=${{ secrets.DOCKER_USERNAME }} \
             --docker-password=${{ secrets.DOCKER_PASSWORD }} \
-            --docker-email=${{ secrets.DOCKER_EMAIL }} \
-            --dry-run=client -o yaml | kubectl apply -f -    
+            --dry-run=client -o yaml | kubectl apply -f -
