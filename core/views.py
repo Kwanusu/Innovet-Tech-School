@@ -18,6 +18,7 @@ from django.utils import timezone
 from rest_framework.views import APIView
 import secrets
 from tech_school.models import Transaction
+import requests
 
 User = get_user_model()
 
